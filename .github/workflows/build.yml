@@ -1,0 +1,54 @@
+name: Build card data
+
+# Prices daily; everything else from TCGdex on Mondays, since cards only change when sets come out.
+# tcgcsv.com refreshes TCGplayer prices around 20:00 UTC, so the daily run picks them up the next morning.
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      full:
+        description: Rebuild everything from TCGdex (takes a couple of hours)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: data
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the published data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p out
+          gh release download data --dir out --pattern '*.deflate' || echo "Nothing published yet"
+
+      - name: Build
+        env:
+          FULL: ${{ inputs.full }}
+        run: |
+          if [ "$FULL" = "true" ] || [ "$(date -u +%u)" = "1" ] || [ ! -f out/products.deflate ]; then
+            python3 build-catalog.py full out
+          else
+            python3 build-catalog.py prices out
+          fi
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view data > /dev/null 2>&1 || \
+            gh release create data --title "Card data" --notes "Rebuilt automatically. See README.md."
+          gh release upload data out/catalog.deflate out/prices.deflate out/products.deflate --clobber
+          # Last, so a phone never reads a manifest that points past the files.
+          gh release upload data out/manifest.json --clobber
